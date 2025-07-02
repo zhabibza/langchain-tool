@@ -3,15 +3,14 @@
 import { ChatGroq } from "@langchain/groq";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { HumanMessage } from "@langchain/core/messages";
+import { ToolMessage } from "@langchain/core/messages";
 
 
 // Load environment variables from .env file
 // Ensure you have a .env file with your Groq API key
 import * as dotenv from "dotenv";
 dotenv.config();
-
-// Initialize the Groq agent with your model and temperature settings
-const agentModel = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.7 });
 
 // Define the input schema for the tool
 const weatherInputSchema = z.object({
@@ -52,14 +51,41 @@ export const weatherTool = tool(getCurrentWeather, {
   schema: weatherInputSchema,
 });
 
+
+// Initialize the Groq agent with your model and temperature settings
+const llm = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.7 });
+
+// Bind the tools to the LLM
+const llmWithTools = llm.bindTools([weatherTool]);
+
 // Now it's time to use!
-const response = await weatherTool.invoke({ latitude: 0, longitude: 0 });
+const response = await llmWithTools.invoke([
+    new HumanMessage("What the weather at Lat: 37.668819, Lon: -122.080795?")
+  ]);
 
-//console.log(weatherTool.name); // get_current_weather
-//console.log(weatherTool.description); // Get the current weather for a given latitude and longitude.
+if (response.tool_calls && response.tool_calls.length > 0) {
+  const toolCall = response.tool_calls[0];
 
-console.log("Example usage of the weather tool:");
-console.log(response); // Current weather at Lat: 37.668819, Lon: -122.080795 is: Temperature 20°C, Wind Speed 5 km/h, Weather Code 1
+  if (toolCall.name === weatherTool.name) {
+    const parsedArgs = weatherInputSchema.parse(toolCall.args);
+    const toolOutput = await getCurrentWeather(parsedArgs);
+    const finalResponse = await llmWithTools.invoke([
+      ...(typeof response.content === "string" && response.content
+        ? [new HumanMessage(`What the weather at Lat: ${parsedArgs.latitude}, Lon: ${parsedArgs.longitude}?`)]
+        : []),
+      new ToolMessage({
+        tool_call_id: toolCall.id!,
+        content: toolOutput,
+      })
+    ]);
+    //console.log("Full Final Response Object:", finalResponse);
+    console.log("AI Final Response:", finalResponse.content);
+    console.log("Tool Output:", toolOutput);
+  }
+}
+
+console.log("Tool calls:", response.tool_calls);
+
 
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
@@ -68,8 +94,29 @@ const rl = readline.createInterface({ input, output });
 
 const coordinates = await rl.question('Enter a latitude and longitude (comma-separated, e.g., 37.7749,-122.4194): ');
 const [latitude, longitude] = coordinates.split(',').map(coord => parseFloat(coord.trim()));
-const userResponse = await weatherTool.invoke({ latitude: latitude, longitude: longitude });
-console.log(userResponse);
+
+const userResponse = await llmWithTools.invoke([
+  new HumanMessage(`What is the weather at Lat: ${latitude}, Lon: ${longitude}?`)
+]);
+
+if (userResponse.tool_calls && userResponse.tool_calls.length > 0) {
+  const toolCall = userResponse.tool_calls[0];
+
+  if (toolCall.name === weatherTool.name) {
+    const parsedArgs = weatherInputSchema.parse(toolCall.args);
+    const toolOutput = await getCurrentWeather(parsedArgs);
+    const finalResponse = await llmWithTools.invoke([
+      new HumanMessage(`What is the weather at Lat: ${latitude}, Lon: ${longitude}?`),
+      new ToolMessage({
+        tool_call_id: toolCall.id!,
+        content: toolOutput,
+      })
+    ]);
+    console.log("AI Final Response:", finalResponse.content);
+    console.log("Tool Output:", toolOutput);
+  }
+}
+
+console.log("Tool calls:", userResponse.tool_calls);
 
 rl.close();
-
